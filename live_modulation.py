@@ -21,6 +21,8 @@ Usage
 import argparse
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+from mmcore_types import CMMCore  # not perfect typing file to help autocompletes
 
 import cv2
 # import matplotlib
@@ -41,7 +43,7 @@ class Microscope:
 
     def __init__(self, args):
         from pycromanager import Core  # only needed live
-        self.core = Core()
+        self.core = cast("CMMCore", Core())
         self.args = args
         if args.exposure is not None:
             self.core.set_exposure(args.exposure)
@@ -81,12 +83,34 @@ class Microscope:
 
     def cycle(self):
         self.arm()  # re-sync every cycle so a stray trigger (e.g. MM live) can't shift the phases
-        frames = []
-        for _ in range(self.args.n_phases):  # each snap's trigger-out advances the table one row
-            self.core.snap_image()
-            im = self.core.get_tagged_image()
-            frames.append(np.reshape(im.pix, (im.tags["Height"], im.tags["Width"])))
-        return np.stack(frames)
+        c, n = self.core, self.args.n_phases
+        H, W = c.get_image_height(), c.get_image_width()
+        frames = None
+        poll_s = min(0.5 * c.get_exposure(), 20) / 1000
+
+        # burst: each frame's trigger-out advances the table one row; frames go straight from the
+        # circular buffer into numpy (pop_next_image skips the tag JSON, no Java datastore round-trips)
+        c.clear_circular_buffer()
+        c.start_sequence_acquisition(n, 0, True)
+        try:
+            i, t_end = 0, time.perf_counter() + 5 + n * c.get_exposure() / 1000
+            while i < n:
+                if c.get_remaining_image_count() > 0:
+                    pix = np.asarray(c.pop_next_image())
+                    if frames is None:
+                        frames = np.empty((n, H, W), pix.dtype)
+                    frames[i] = pix.reshape(H, W)
+                    i += 1
+                elif not c.is_sequence_running():
+                    raise RuntimeError(f"sequence stopped after {i}/{n} frames")
+                elif time.perf_counter() > t_end:
+                    raise TimeoutError(f"only {i}/{n} frames arrived")
+                else:
+                    time.sleep(poll_s)
+        finally:
+            if c.is_sequence_running():
+                c.stop_sequence_acquisition()
+        return frames
 
 
 class Replay:

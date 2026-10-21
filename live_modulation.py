@@ -8,15 +8,14 @@ U + G is phase-independent, bin, and fit DC + harmonics per pixel (pseudo-invers
 Shown: m1 maps of U, G and their mean on a fixed colour scale, the central-ROI traces with fits,
 and the per-frame U + G (excitation stability). The ROI is fixed after the first cycle.
 
-Setting the phase (Micro-Manager must be running with the pycromanager server enabled):
-    --group <config group> --presets <one preset per phase>        e.g. the channel group used for
-                                                                   the 6-phase acquisitions
-    --device <device> --prop <property> --values <one per phase>   e.g. a function-generator phase
+Phase stepping (Micro-Manager must be running with the pycromanager server enabled): all phase
+control is over serial to the 409C DDS. Program the table first (set_phases.bsh /
+set_phases_multichannel.bsh, --n-phases rows). Each cycle the table is reset to row 0 and the
+camera trigger-out advances it one row per frame; on exit stepping is disabled again.
 
 Usage
 -----
-    python live_modulation.py --group Phase --presets 0 30 60 90 120 150
-    python live_modulation.py --device FG --prop Phase --values 0 30 60 90 120 150 --exposure 100
+    python live_modulation.py [--dds-port COM12] --n-phases 6 --phase-step 30 [--exposure 100]
     python live_modulation.py --file <acquisition folder or .ome.tif> [--loop]   # replay, no microscope
 """
 import argparse
@@ -24,7 +23,10 @@ import time
 from pathlib import Path
 
 import cv2
+# import matplotlib
+# matplotlib.use('pyqt4')  # Must be called BEFORE importing pyplot
 import matplotlib.pyplot as plt
+
 import numpy as np
 import tifffile
 from scipy import ndimage as ndi
@@ -35,7 +37,7 @@ import register_views as rv
 
 # ------------------------------------------------------------------ sources
 class Microscope:
-    """One frame per phase from Micro-Manager, phase set by config-group presets or a device property."""
+    """One frame per phase from Micro-Manager; the camera trigger-out steps the 409C DDS table."""
 
     def __init__(self, args):
         from pycromanager import Core  # only needed live
@@ -43,23 +45,44 @@ class Microscope:
         self.args = args
         if args.exposure is not None:
             self.core.set_exposure(args.exposure)
-        self.steps = args.presets if args.group else args.values
-        if not self.steps:
-            raise SystemExit("give --group with --presets, or --device/--prop with --values")
+        self.core.set_property(args.trigger_camera, "TriggerPort", args.trigger_port)
+        self.core.set_property(args.trigger_camera, "TriggerPortEnable", "On")
 
-    def set_phase(self, k):
-        a, c = self.args, self.core
-        if a.group:
-            c.set_config(a.group, a.presets[k])
-            c.wait_for_config(a.group, a.presets[k])
-        else:
-            c.set_property(a.device, a.prop, a.values[k])
-            c.wait_for_device(a.device)
+    # ---- 409C serial (as serialFunctions.bsh)
+    def dds(self, cmd):
+        """Send a command to the 409C and read lines until its status line ("OK" or "?x")."""
+        port, c = self.args.dds_port, self.core
+        c.set_serial_port_command(port, cmd, "\r\n")
+        lines = []
+        while True:
+            try:
+                reply = str(c.get_serial_port_answer(port, "\n")).strip()
+            except Exception:
+                break  # timeout: nothing more to read
+            if not reply:
+                continue
+            lines.append(reply)
+            if reply == "OK" or reply.startswith("?"):
+                break
+        if lines and lines[-1].startswith("?"):
+            print(f"*** 409C rejected '{cmd}': {' / '.join(lines)}")
+        return lines
+
+    def arm(self):
+        """Table back to row 0, stepping on each camera trigger (TSTOP is needed before I s)."""
+        for cmd in ("I d", "TSTOP", "TS 0", "I s"):
+            self.dds(cmd)
+
+    def close(self):
+        """Disable stepping, table back to row 0 (as disable_phase_stepping_live.bsh)."""
+        for cmd in ("I d", "TSTOP", "TS 0"):
+            self.dds(cmd)
+        self.core.set_property(self.args.trigger_camera, "TriggerPortEnable", "Off")
 
     def cycle(self):
+        self.arm()  # re-sync every cycle so a stray trigger (e.g. MM live) can't shift the phases
         frames = []
-        for k in range(len(self.steps)):
-            self.set_phase(k)
+        for _ in range(self.args.n_phases):  # each snap's trigger-out advances the table one row
             self.core.snap_image()
             im = self.core.get_tagged_image()
             frames.append(np.reshape(im.pix, (im.tags["Height"], im.tags["Width"])))
@@ -82,6 +105,9 @@ class Replay:
         out = self.raw[self.i:self.i + self.n]
         self.i += self.n
         return out
+
+    def close(self):
+        pass
 
 
 # --------------------------------------------------------------- processing
@@ -112,16 +138,21 @@ class Processor:
         mask &= (cU[0] > a.mask_thr * np.nanpercentile(cU[0], 99)) & (cG[0] > a.mask_thr * np.nanpercentile(cG[0], 99))
         mU, mG = np.where(mask, md.m1(cU), np.nan), np.where(mask, md.m1(cG), np.nan)
 
-        if self.box is None:                                    # ROI fixed after the first cycle
+        box = self.box
+        if box is None:                                         # ROI fixed after the first cycle with signal
             if a.roi_center is not None:
                 cy, cx = a.roi_center
-            else:
+            elif mask.any():
                 cy, cx = ((np.array(ndi.center_of_mass(mask)) + 0.5) * a.bin).round().astype(int)
+            else:                                               # no signal (e.g. excitation off): image centre
+                cy, cx = H // 2, W // 2
             h = a.roi // 2
-            self.box = (slice(max(cy - h, 0), cy + h), slice(max(cx - h, 0), cx + h))
-        u, g = (np.nansum(X[:, self.box[0], self.box[1]], axis=(1, 2)) for X in (U, G))
+            box = (slice(max(cy - h, 0), cy + h), slice(max(cx - h, 0), cx + h))
+            if a.roi_center is not None or mask.any():
+                self.box = box
+        u, g = (np.nansum(X[:, box[0], box[1]], axis=(1, 2)) for X in (U, G))
         return dict(mU=mU, mG=mG, mAvg=0.5 * (mU + mG), u=u, g=g, cu=self.P @ u, cg=self.P @ g,
-                    tot=tot / np.median(tot), bg=float(np.mean(bg)))
+                    tot=tot / np.median(tot), bg=float(np.mean(bg)), box=box)
 
 
 # ------------------------------------------------------------------ display
@@ -170,11 +201,13 @@ class Display:
         for im, m in zip(self.ims, (r["mU"], r["mG"], r["mAvg"])):
             im.set_data(m)
             im.set_extent((-0.5, m.shape[1] - 0.5, m.shape[0] - 0.5, -0.5))
+        b = r["box"]
+        xy = (b[1].start / a.bin - 0.5, b[0].start / a.bin - 0.5)
         if not self.rects:
-            b = self.proc.box
             for ax_ in self.ax[0]:
-                self.rects.append(ax_.add_patch(plt.Rectangle((b[1].start / a.bin - 0.5, b[0].start / a.bin - 0.5),
-                                                              a.roi / a.bin, a.roi / a.bin, fill=False, ec="w")))
+                self.rects.append(ax_.add_patch(plt.Rectangle(xy, a.roi / a.bin, a.roi / a.bin, fill=False, ec="w")))
+        for rect in self.rects:                                 # moves until the ROI is fixed
+            rect.set_xy(xy)
         ph = self.proc.phases
         for pt, fit, y, c in zip(self.pts, self.fits, (r["u"], r["g"]), (r["cu"], r["cg"])):
             pt.set_data(ph, y / c[0])
@@ -201,16 +234,14 @@ class Display:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--group", help="Micro-Manager config group that sets the phase")
-    p.add_argument("--presets", nargs="+", help="one preset of --group per phase, in phase order")
-    p.add_argument("--device", help="device whose property sets the phase")
-    p.add_argument("--prop", help="property of --device that sets the phase")
-    p.add_argument("--values", nargs="+", help="one property value per phase, in phase order")
+    p.add_argument("--dds-port", default="COM12", help="409C DDS serial port")
+    p.add_argument("--trigger-camera", default="TUCamGen", help="camera device with the trigger output")
+    p.add_argument("--trigger-port", default="Port2", help="camera TriggerPort wired to the 409C")
     p.add_argument("--exposure", type=float, default=None, help="camera exposure [ms] (default: as set in MM)")
     p.add_argument("--file", type=Path, help="replay a saved stack instead of acquiring")
     p.add_argument("--loop", action="store_true", help="with --file: replay forever")
-    p.add_argument("--reg", type=Path, default=rv.DEFAULT_REG, help="registration json (warp + split)")
-    p.add_argument("--n-phases", type=int, default=6)
+    p.add_argument("--reg", type=Path, default=Path(r"C:\Users\Selvin Lab\Documents\MicroManager\scripts\bead_registration.json"), help="registration json (warp + split)")
+    p.add_argument("--n-phases", type=int, default=6, help="rows in the DDS table (as in set_phases.bsh)")
     p.add_argument("--phase-step", type=float, default=30.0, help="RF phase step between frames [deg]")
     p.add_argument("--period", type=float, default=180.0, help="gating period in RF phase [deg]")
     p.add_argument("--harmonics", type=int, default=2)
@@ -225,24 +256,23 @@ def main():
     p.add_argument("--max-cycles", type=int, default=None, help="stop after this many cycles")
     p.add_argument("--snapshot", type=Path, default=None, help="save the window to this png after each cycle")
     args = p.parse_args()
-    if args.presets is not None:
-        args.n_phases = len(args.presets)
-    elif args.values is not None:
-        args.n_phases = len(args.values)
 
     source = Replay(args) if args.file else Microscope(args)
     proc = Processor(args)
     disp = Display(args, proc)
     n = 0
-    while plt.fignum_exists(disp.fig.number) and (args.max_cycles is None or n < args.max_cycles):
-        t0 = time.perf_counter()
-        raw = source.cycle()
-        if raw is None:
-            break
-        n += 1
-        disp.update(proc(raw), n, time.perf_counter() - t0)
-        if args.snapshot is not None:
-            disp.fig.savefig(args.snapshot, dpi=70)
+    try:
+        while plt.fignum_exists(disp.fig.number) and (args.max_cycles is None or n < args.max_cycles):
+            t0 = time.perf_counter()
+            raw = source.cycle()
+            if raw is None:
+                break
+            n += 1
+            disp.update(proc(raw), n, time.perf_counter() - t0)
+            if args.snapshot is not None:
+                disp.fig.savefig(args.snapshot, dpi=70)
+    finally:
+        source.close()  # disarm the DDS stepping even on Ctrl-C / errors
     plt.ioff()
     if plt.fignum_exists(disp.fig.number):
         plt.show()

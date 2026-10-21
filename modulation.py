@@ -33,8 +33,7 @@ import pandas as pd
 import tifffile
 from scipy import ndimage as ndi
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 DEFAULT_DATA = Path(r"E:\20261019\20261019_analysis\registered\modulation_data")
 DEFAULT_OUT = Path(r"E:\20261019\20261019_analysis\modulation_results")
@@ -211,4 +210,5 @@ def main():
 
 
 if __name__ == "__main__":
+    matplotlib.use("Agg")  # batch only: not on import, so live_modulation keeps an interactive backend
     main()

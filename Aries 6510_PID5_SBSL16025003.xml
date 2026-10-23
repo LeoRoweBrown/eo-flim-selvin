@@ -1,0 +1,22 @@
+<?TUXML version="1.0" encoding="UTF-8"?>
+<Cam_Aries6510 Using="DftParameter">
+    <ParameterSets Name="DftParameter">
+        <Resolution>0</Resolution>
+        <GlobalGain>0</GlobalGain>
+        <FMExposure>0</FMExposure>
+        <LNExposure>10000</LNExposure>
+        <WhiteBalance>2</WhiteBalance>
+        <Sharpness>0</Sharpness>
+        <ATWBalanceType>1</ATWBalanceType>
+        <Gamma>100</Gamma>
+        <Contrast>128</Contrast>
+        <LeftLevels>0</LeftLevels>
+        <RightLevels>65535</RightLevels>
+        <HistogramStatistic>0</HistogramStatistic>
+        <AutoLevels>0</AutoLevels>
+        <VerticalCorrection>0</VerticalCorrection>
+        <TimeStampEn>1</TimeStampEn>
+        <Visibility>0</Visibility>
+        <IgnorePercentage>10</IgnorePercentage>
+    </ParameterSets>
+</Cam_Aries6510>

@@ -10,8 +10,9 @@ Per dataset
 1. Camera offset from the image margins (as modulation.py); frame sums of U and G.
 2. Detection: difference-of-Gaussians on each frame sum, maxima above --thr x robust sigma.
    U and G spots are paired via the mode of their offsets (search radius --search).
-3. Photometry: per molecule and view a 2D Gaussian (A, y, x, sigma, b) on the frame sum; then per
-   frame, shape fixed, A_k and b_k by linear least squares. Counts N_k = 2 pi sigma^2 A_k [ADU]
+3. Photometry: per molecule a 2D Gaussian per view (A, y, x, b) on the frame sums with one sigma
+   shared by U and G (--separate-sigma: one per view; an independent sigma error per view enters the
+   G/U ratio as sigma^2); then per frame, shape fixed, A_k and b_k by linear least squares. Counts N_k = 2 pi sigma^2 A_k [ADU]
    with the local background removed. Crowded, uncovered or badly fitted molecules are dropped.
 4. Co-registration: residual translation G - U from the fitted positions; the bead registration
    composed with it is saved as <name>_registration_corrected.json (usable with register_views --reg).
@@ -146,8 +147,37 @@ def fit_spot(img, y, x, h):
     return r.x
 
 
+def fit_pair(imu, img, pu, pg, h, kappa=1.0):
+    """Joint 2D Gaussians on the U and G frame sums with one shared width, sigma_G = kappa sigma_U (the
+    views image the same PSF up to a fixed scale, and an independent per-view sigma error enters the
+    counts as sigma^2): (A, y, x, sigma, b) for U and for G, or None."""
+    wins = []
+    for img_, (y, x) in ((imu, pu), (img, pg)):
+        iy, ix = int(round(y)), int(round(x))
+        if iy - h < 0 or ix - h < 0 or iy + h + 1 > img_.shape[0] or ix + h + 1 > img_.shape[1]:
+            return None
+        w = img_[iy - h:iy + h + 1, ix - h:ix + h + 1]
+        if not np.isfinite(w).all():
+            return None
+        wins.append((w, *np.mgrid[iy - h:iy + h + 1, ix - h:ix + h + 1].astype(float)))
+
+    def resid(p):
+        return np.concatenate([(a * np.exp(-((gy - y) ** 2 + (gx - x) ** 2) / (2 * s ** 2)) + b - w).ravel()
+                               for (w, gy, gx), (a, y, x, b), s in
+                               zip(wins, (p[[0, 1, 2, 7]], p[[3, 4, 5, 8]]), (p[6], kappa * p[6]))])
+    (wu, *_), (wg, *_) = wins
+    bu, bg = np.percentile(wu, 20), np.percentile(wg, 20)
+    (yu, xu), (yg, xg) = pu, pg
+    r = least_squares(resid, [wu.max() - bu, yu, xu, wg.max() - bg, yg, xg, 1.5, bu, bg],
+                      bounds=([0, yu - 2, xu - 2, 0, yg - 2, xg - 2, 0.6, -np.inf, -np.inf],
+                              [np.inf, yu + 2, xu + 2, np.inf, yg + 2, xg + 2, 4.0, np.inf, np.inf]))
+    p = r.x
+    return p[[0, 1, 2, 6, 7]], np.r_[p[[3, 4, 5]], kappa * p[6], p[8]]
+
+
 def frame_counts(stack, fit, h):
-    """Per-frame integrated counts 2 pi s^2 A_k and their 1-sigma errors, shape fixed from fit."""
+    """Per-frame integrated counts 2 pi s^2 A_k, their 1-sigma errors and the local background b_k [ADU/px],
+    shape fixed from fit."""
     _, y0, x0, s, _ = fit
     iy, ix = int(round(y0)), int(round(x0))
     gy, gx = np.mgrid[iy - h:iy + h + 1, ix - h:ix + h + 1].astype(float)
@@ -156,7 +186,7 @@ def frame_counts(stack, fit, h):
     coef = np.linalg.lstsq(D, W, rcond=None)[0]
     var = ((W - D @ coef) ** 2).sum(0) / (len(D) - 2)
     k = 2 * np.pi * s ** 2
-    return k * coef[0], k * np.sqrt(var * np.linalg.inv(D.T @ D)[0, 0])
+    return k * coef[0], k * np.sqrt(var * np.linalg.inv(D.T @ D)[0, 0]), coef[1]
 
 
 # ---------------------------------------------------------------------- main
@@ -171,17 +201,28 @@ def process(path, args, L, taus):
     tree = cKDTree(np.r_[pu, pg])
     isolated = np.array([len(tree.query_ball_point(pu[i], args.min_sep)) <= 2 for i in iu])  # itself in U and G
 
-    rows, N, E = [], [], []
-    for i, j in zip(iu[isolated], jg[isolated]):
-        fu, fg = fit_spot(Us, *pu[i], args.half), fit_spot(Gs, *pg[j], args.half)
+    pairs = list(zip(iu[isolated], jg[isolated]))
+    fits = [(fit_spot(Us, *pu[i], args.half), fit_spot(Gs, *pg[j], args.half)) for i, j in pairs]
+    kappa = 1.0
+    if not args.separate_sigma:
+        # G / U width ratio of the optics, from the separate fits of well-fitted spots
+        q = np.array([fg[3] / fu[3] for fu, fg in fits if fu is not None and fg is not None
+                      and 0.8 < fu[3] < 3.5 and 0.8 < fg[3] < 3.5])
+        kappa = float(np.median(q)) if args.sigma_ratio is None else args.sigma_ratio
+        print(f"  sigma_G / sigma_U = {kappa:.3f}" + (" (median of separate fits)" if args.sigma_ratio is None else ""))
+        fits = [fit_pair(Us, Gs, pu[i], pg[j], args.half, kappa) or (None, None) for i, j in pairs]
+
+    rows, N, E, Bk = [], [], [], []
+    for fu, fg in fits:
         if fu is None or fg is None:
             continue
-        (nu, eu), (ng, eg) = frame_counts(U, fu, args.half), frame_counts(G, fg, args.half)
+        (nu, eu, bu), (ng, eg, bgk) = frame_counts(U, fu, args.half), frame_counts(G, fg, args.half)
         rows.append(dict(y=fu[1], x=fu[2], yG=fg[1], xG=fg[2], sigma_U=fu[3], sigma_G=fg[3]))
-        N.append((nu, ng)), E.append((eu, eg))
+        N.append((nu, ng)), E.append((eu, eg)), Bk.append((bu, bgk))
     df = pd.DataFrame(rows)
     N, E = np.array(N), np.array(E)                                 # (n_mol, 2, n_frame): U, G
     NU, NG, EU, EG = N[:, 0], N[:, 1], E[:, 0], E[:, 1]
+    Bk = np.array(Bk)                                               # local background per frame [ADU/px]
 
     # residual G - U translation from the fitted positions
     off = df[["yG", "xG"]].to_numpy() - df[["y", "x"]].to_numpy()
@@ -218,6 +259,7 @@ def process(path, args, L, taus):
     df["counts"], df["frames_on"], df["good"], df["tau"], df["chi2"] = tot, on.sum(1), good, tau, chi2
     for k, ph in enumerate(phases):
         df[f"NU_{ph:g}"], df[f"NG_{ph:g}"], df[f"r_{ph:g}"], df[f"sr_{ph:g}"] = NU[:, k], NG[:, k], r[k], sr[k]
+        df[f"BU_{ph:g}"], df[f"BG_{ph:g}"] = Bk[:, 0, k], Bk[:, 1, k]
         df[f"tau_{ph:g}"] = tau_f[k]
     df.to_csv(args.out / f"{name}_molecules.csv", index=False)
 
@@ -300,6 +342,10 @@ def main():
     p.add_argument("--thr", type=float, default=6.0, help="detection threshold [robust sigma of the DoG image]")
     p.add_argument("--search", type=float, default=20.0, help="max G - U offset searched for pairing [px]")
     p.add_argument("--half", type=int, default=5, help="fit window half-width [px]")
+    p.add_argument("--separate-sigma", action="store_true",
+                   help="fit the PSF width separately in U and G (default: one shared width)")
+    p.add_argument("--sigma-ratio", type=float, default=None,
+                   help="fixed sigma_G / sigma_U for the shared-width fit (default: median of separate fits)")
     p.add_argument("--min-sep", type=float, default=8.0, help="drop molecules with another spot closer than this [px]")
     p.add_argument("--min-frame-snr", type=float, default=3.0,
                    help="a frame counts if its U + G is above this many sigma (else: molecule off)")

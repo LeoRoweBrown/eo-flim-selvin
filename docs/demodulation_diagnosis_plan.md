@@ -19,7 +19,8 @@ phasor terms, 15–60 % of the dye light behaves as if it were not gated at 40 M
   and an efficiency imbalance gives almost nothing.
 - **Ruled out or unlikely:**
   - The blank (water and dish): ≤1.4–6 % of the signal.
-  - Exposure-time effects: beads at 100 ms and 1 µM MB at 20–50 ms are fine.
+  - Exposure-time effects in the reference: beads at 100 ms and 1 µM MB at 20–50 ms are fine. *But the dyes' f_dc
+    does depend on exposure (2026-11-05, see "Update 2026-11-05" below).*
   - A fault in the calculation (see above).
 - **Fine (f_dc ≈ 0):**
   - In-focus beads on the coverslip.
@@ -50,9 +51,231 @@ phasor terms, 15–60 % of the dye light behaves as if it were not gated at 40 M
 | **H2** | **Part of the excitation is unmodulated**: the diode's spontaneous emission or amplified spontaneous emission (ASE). Above threshold the carrier density clamps, so this light is nearly constant, broadband and incoherent (no rings). Dyes absorb it differently from the laser line. | smooth unmodulated light; dye dependence | beads fine (their dye would absorb it too) |
 | H3 | **Dye photophysics or chemistry**: a long-lived (≫25 ns) emitting photoproduct, impurity or delayed emission. | f_dc rising with power | ATTO and Cy5 both affected; the bead glow |
 | H4 | **The measurement itself**: gate drift between IRF and sample, IRF power mismatch, phase-step desync, camera offset. | the size of some scatter | the effect is systematic and dye-dependent |
+| H5 | **A prompt (≈0 ns) component** mixed with the dye: leaked excitation (the TIRF reflection is strong), Raman, or strongly quenched dye. It lies on the chord to (1, 0), not on the line to the origin (see below). | ATTO's short τ_phase (1.7–1.9 ns, against 3.5 ns for ATTO 647N) | at most f_dc ≈ 0.14 with a 3.5 ns dye and ≈ 0.015 with Cy5, so it cannot be the whole effect |
 
 H1 is the leading hypothesis. The plan tests it first and most directly, while running the cheap checks for H2 and H4 in
 parallel.
+
+## Update 2026-11-05 (oxygen scavengers, ATTO 647N–streptavidin and Cy5)
+
+Data: `F:\uiuc_data\20261105(1)\20261105\ox_test`; details in the method notes' dataset log.
+
+- **Still demodulated with PCA/PCD + Trolox:** Cy5 f_dc 0.23–0.35 (0.33–0.45 without scavengers on 2026-10-30), ATTO
+  0.12–0.27. Removing oxygen lengthens triplet lifetimes, so delayed emission from triplets would have *grown*. It
+  didn't, which weakens a triplet-based H3.
+- **f_dc rises with exposure, reversibly, at fixed power and field; τ_phase is unchanged:**
+  - ATTO: 20 ms 0.12 → 40 ms 0.17 → 100 ms 0.26 → 200 ms 0.27, then back to 0.17 and 0.13.
+  - Cy5: 100 ms 0.23 → 200 ms 0.31 → 400 ms 0.35, then back to 0.23.
+  - MB IRFs show no trend from 10 to 40 ms. The 200 ms MB saturated, so long-exposure IRFs are untested.
+  - Stray/dark light (~0.2 ADU/ms) is ~10× too small to explain it.
+  - Geometry (H1) cannot depend on exposure.
+- **Laser:** off between acquisitions and, per the user, on during them. The total U+G changes by <2 % across the 6
+  frames at every exposure, and the 0.5 s laser-settle stacks made no difference, so nothing visibly builds up during a
+  stack. *Steady-state photophysics under continuous illumination should not depend on exposure, so the mechanism of
+  the exposure dependence is still unknown.* Open: what `trig`/`notrig` switch, and whether the laser is gated per frame.
+- **No z dependence** (Cy5 −2…+10 µm, ATTO 0…15 µm). For a uniform dye layer with the cell in the pupil, defocus does
+  not change the pupil distribution reaching a pixel, so this does not test H1a; that needs point sources (E1).
+- **ATTO τ_phase is short and changes:** 1.68–1.93 ns before clumping and 2.5–2.8 ns after (2.1–2.4 and 3.2–3.3 ns with
+  τ_ref = 0.37 ns for MB), against ~3.5 ns for ATTO 647N. The user's earlier ATTO measurements gave 2.77 ns.
+
+## Prompt light, long-lived light and two-frequency unmixing
+
+### What "demodulated" means in the phasor
+
+f_dc does not measure a loss of modulation as such. It measures how far the point lies *inside* the semicircle for its
+phase:
+
+    f_dc = 1 − |h| / cos(arg h)
+
+A single exponential lies on the semicircle (f_dc = 0). **Any mixture of different lifetimes lies inside it**, because
+the phasor of a mixture is the intensity-weighted average of the components' phasors, i.e. a point on the chord between
+them. The "τ + DC" reading is only one of the mixtures that reach a given point:
+
+| mixture | where it lies | what changes |
+|---|---|---|
+| τ + unmodulated (DC, or lifetime ≫ 1/ω) | on the line from the τ point to the origin (0, 0) | |h| falls, phase unchanged; f_dc = the DC fraction at every frequency |
+| τ + prompt (≈0 ns) | on the chord from the τ point to (1, 0) | phase falls (τ_phase shortens), |h| *rises*, but by less than a single exponential at that phase would need |
+| τ + a longer component (5–100 ns) | on the chord to that component's point | between the two; approaches the DC case as the long lifetime grows |
+
+### How prompt light makes a point look demodulated
+
+Prompt light is fully modulated and has zero phase relative to the IRF, so on its own it would *raise* the modulation.
+It looks demodulated because it lowers the phase *more* than it raises |h|. The point then sits below the semicircle at
+its new phase, and the "τ + DC" reading interprets that gap as unmodulated light. Example: 80 % of 3.5 ns plus 20 %
+prompt, at 40 MHz:
+
+- h = 0.8 · (0.564 + 0.496i) + 0.2 = 0.651 + 0.397i, |h| = 0.762, phase 31.4°;
+- τ_phase = 2.42 ns, τ_mod = 3.38 ns, f_dc = 0.11, with no unmodulated light at all.
+
+Apparent f_dc from a prompt component (computed, 1 − long fraction = prompt fraction):
+
+| long component | prompt fraction | f_dc at 20 MHz | 40 MHz | 80 MHz | τ_phase at 40 MHz |
+|---|---|---|---|---|---|
+| 3.5 ns | 10 % | 0.017 | 0.065 | 0.21 | 2.92 ns |
+| 3.5 ns | 20 % | 0.030 | 0.107 | 0.31 | 2.42 ns |
+| 3.5 ns | 30 % | 0.038 | 0.132 | 0.34 | 1.99 ns |
+| 3.5 ns | 50 % | 0.044 | 0.139 | 0.30 | 1.26 ns |
+| 1.0 ns (Cy5-like) | any | ≤0.004 | ≤0.015 | ≤0.056 | |
+
+Consequences:
+- **Prompt light cannot explain Cy5's f_dc of 0.23–0.35.** With a 1 ns dye the chord to (1, 0) hugs the semicircle. Cy5
+  needs truly unmodulated light or a component much longer than 1/ω.
+- **For ATTO it can explain part of it**: early ATTO at 20 ms (τ_ref-corrected (0.70, 0.40); 40 ms (0.65, 0.38)) is
+  close to 3.5 ns plus ~20 % prompt light. The rise of f_dc with exposure on top of that moves the point towards the
+  origin, i.e. it is DC-like.
+- Clumping lengthened ATTO's τ_phase while the total signal fell 25–80×. A fixed prompt background (leakage, Raman)
+  would have become a *larger* share, so the short component probably came from the dye in solution itself (quenched or
+  stacked dyes on multiply labelled streptavidin, or aggregates that later stuck to the glass). This is an inference.
+
+### Unmixing with two frequencies
+
+One frequency gives two numbers (g, s) per pixel, so it cannot tell the mixtures above apart. **A second frequency on
+the same field adds two more**, and the mixtures have different frequency signatures:
+
+| what is mixed with the dye | f_dc at 20 MHz vs 40 MHz |
+|---|---|
+| truly unmodulated light (DC, or ≫ 100 ns) | the same at both |
+| a 10–30 ns component (e.g. 30 % of 10 ns with Cy5) | lower at 20 MHz (0.13 vs 0.20 for 10 ns; nearly equal at 30 ns) |
+| a prompt component | ~3–4× lower at 20 MHz (0.03 vs 0.11 for 20 % with 3.5 ns) |
+
+With the dye lifetime known (ATTO 647N 3.5 ns, Cy5 ~1 ns), the model "dye + prompt + DC" is linear in the three
+fractions (they sum to 1). The two complex phasors give four equations for two free fractions, so the fit is
+overdetermined and its residual tests the model. If the residual is large, let the second lifetime float.
+
+The 2026-10-30 data already gave f_dc ≈ the same at 20 and 40 MHz for Cy5 (0.27–0.43 vs 0.35–0.47), which favours
+DC-like light for Cy5. That comparison was not on the same field or at the same time, so redo it properly:
+
+1. Same field, same exposure and power, interleaved 40 → 20 → 40 MHz, with an MB IRF at each frequency before and after.
+2. Calibrate per pixel at both frequencies. The 20 MHz IRF varies strongly across the field (|h| 0.65–1.03, phase
+   −2.8…+1.4 ns), so ROI averages are unsafe there.
+3. 20 MHz has a ~10 % 3rd harmonic that 6 steps cannot separate (up to ~0.5 ns on τ_phase). Use 12 steps × 30° (a full
+   360° RF period) at 20 MHz so it can be fitted.
+4. Samples: ATTO 647N (free dye and the streptavidin conjugate), Cy5, a buffer-only channel (any prompt light from
+   leakage or Raman appears there at ≈0 phase), and 1 µM MB.
+5. Fit dye + prompt + DC per pixel with the dye lifetime fixed, and report the fractions and residuals.
+
+**A second frequency without switching modes:** a 50 % duty square wave at 40 MHz has no 80 MHz harmonic, so the current
+data carry no 80 MHz information. A ~25–35 % duty cycle adds one. The gate's 80 MHz term goes as J₄(Γ) (0.15 at V = Vπ,
+against J₂ = 0.49 at 40 MHz), so it would be weak but simultaneous. The table above shows that 80 MHz is the most
+sensitive to a prompt component. This needs 8+ phase steps.
+
+### Which harmonics each configuration gives (combining 20/40/80 MHz)
+
+The phase-stepped trace r(θ) over RF phase θ is the gate convolved with the excitation-convolved decay. Its Fourier
+component at RF harmonic m (frequency m × 20 MHz) is
+
+    R_m = gate_m · exc_m · D(ω_m),   D(ω) = Σ_k a_k / (1 + iωτ_k)
+
+So **a frequency is usable only where both the gate and the excitation have a component**:
+- **Gate:** even m ∝ J_m(Γ) cos δ, odd m ∝ J_m(Γ) sin δ.
+- **Square-wave excitation at f_exc with duty d:** harmonics at n · f_exc with amplitude ∝ sinc(n d). At 50 % duty only
+  odd n survive; at 25 % duty n = 4, 8, … vanish.
+
+Amplitude of the r swing and photon information (swing² / mean r(1 − r), ∝ 1/variance), from the
+`convolve_g_with_square.py` model:
+
+| configuration | 20 MHz | 40 MHz | 60 MHz | 80 MHz | steps needed |
+|---|---|---|---|---|---|
+| 40 MHz exc, 50 %, V/Vπ 1.0, δ 0 (current) | – | 0.31 (info 0.53) | – | – | 6 × 30° |
+| 40 MHz exc, 25 %, V/Vπ 1.0, δ 0 | – | 0.44 (1.51) | – | 0.10 (0.07) | 8 × 22.5° over 180° |
+| 40 MHz exc, 25 %, V/Vπ 1.3, δ 0 | – | 0.31 (0.65) | – | 0.19 (0.24) | 8 × 22.5° over 180° |
+| 20 MHz exc, 50 %, V/Vπ 0.6, δ 90° | 0.37 (0.76) | – | 0.02 | – | 6–12 × 30° |
+| 20 MHz exc, 25 %, V/Vπ 0.6, δ 90° | 0.52 (2.44) | – | 0.03 | – | 12 × 30° |
+| **20 MHz exc, 25 %, V/Vπ 0.8, δ 45°** | **0.31 (0.55)** | **0.20 (0.23)** | 0.05 (0.01) | 0 | **12 × 30° over 360°** |
+| 20 MHz exc, 25 %, V/Vπ 1.0, δ 45° | 0.18 (0.17) | 0.22 (0.24) | 0.07 (0.03) | 0 | 12 × 30° over 360° |
+
+Notes:
+- **The 25 % duty cycle at 40 MHz alone roughly triples the 40 MHz information** (1.51 vs 0.53) and adds a weak 80 MHz
+  term. V/Vπ ≈ 1.3 strengthens 80 MHz at the cost of 40 MHz.
+- **20 MHz excitation at 25 % duty with δ ≈ 45° gives 20 and 40 MHz in the same frames.** There is then no drift,
+  exposure or sample change between the frequencies, and the pixels are identical. This is the cleanest unmixing
+  measurement. δ = 90° kills the even harmonics (no 40 MHz); δ = 0 kills the odd ones (no 20 MHz).
+- **Steps:** N steps over the trace period resolve harmonics up to (N − 1)/2 without aliasing. The 40 MHz-excitation
+  trace repeats every 180° of RF, so 8 × 22.5° resolves 40, 80 and 120 MHz. The 20 MHz-excitation trace repeats every
+  360°, so 12 × 30° resolves 20–100 MHz. Use `--period` and `--harmonics` in `bulk_phasor.py` to match.
+- These are model numbers for an ideal square wave. At 25 % duty the 6 ns (40 MHz) or 12 ns (20 MHz) pulses are
+  distorted by the diode's turn-on delay. The IRF absorbs this only if it is taken at identical settings (duty, δ, V,
+  power, exposure).
+
+### Unmixing recipe
+
+1. **Per harmonic, per pixel, relative to an IRF with identical settings:**
+   D(ω_m) = [h_m(sample) / h_m(IRF)] · L_ref(ω_m), with L_ref(ω) = 1 / (1 + iωτ_ref).
+   - τ_ref matters more at higher frequency (MB at 0.37 ns is 5.3° at 40 MHz, 10.5° at 80 MHz).
+   - Use a scattering solution as the IRF (τ_ref = 0 exactly), or measure the MB lifetime against one.
+2. **Stack every usable D(ω_m) from every acquisition of the same field**: harmonics of one run, and runs at other
+   configurations.
+   - Runs must use the same exposure and counts, because f_dc depends on exposure (2026-11-05). Interleave them
+     (A → B → A) to check that the sample didn't change.
+3. **Fit a mixture with intensity fractions:**
+   D(ω) = a_dye L(τ_dye, ω) + a_prompt · 1 + a_long L(τ_long, ω), with a_DC = 1 − a_dye − a_prompt − a_long.
+   - DC light contributes nothing at any ω > 0 and enters only through the normalisation by c₀. That is why it has
+     no column.
+   - Given the lifetimes, the fit is linear in the fractions: bounded least squares (`scipy.optimize.lsq_linear`,
+     0 ≤ a ≤ 1, plus a penalty row for Σa ≤ 1).
+   - Fit τ_long, or τ_dye, by a 1-D grid search around the linear fit.
+   - Weight each D(ω_m) by its information (the table above, or measured from the pixel-to-pixel scatter of D over a
+     uniform patch).
+4. **Count degrees of freedom.** Each frequency gives 2 real equations.
+
+   | frequencies | equations | fixed τ_dye; dye + prompt + DC (2 free) | free τ_long; + long (4 free) |
+   |---|---|---|---|
+   | 2 | 4 | 2 spare (the residual tests the model) | 0 spare |
+   | 3 | 6 | 4 spare | 2 spare |
+
+   So **to test "dye + prompt + DC + a free long component", three usable frequencies are needed.** Options are 20 + 40
+   (one run, δ 45°) plus a 40 + 80 run, or the 20/40/60 MHz set if the 60 MHz term is bright enough.
+5. **Check the result on known samples:**
+   - beads, which should come out as one lifetime;
+   - a buffer-only channel (prompt plus background only);
+   - free ATTO 647N (3.5 ns);
+   - free Cy5 (~1.0 ns).
+   Do this before trusting the fractions on the bulk dyes.
+
+### Free Cy5: what the 2026-11-05 numbers say
+
+- **Prompt light cannot explain Cy5.** With a 1 ns dye it gives at most f_dc ≈ 0.015, against the measured 0.23–0.35.
+  The admixture is DC or long-lived.
+- **Cy5's τ_phase is longer than ~1 ns**, which DC alone cannot do (DC doesn't move the phase). Two models fit the
+  z-series field (100 ms; measured τ_phase 1.27, τ_mod 4.7 ns, f_dc 0.32, τ_ref = 0) about equally well:
+
+  | model | τ_phase | τ_mod | f_dc |
+  |---|---|---|---|
+  | 1.0 ns Cy5 + 30 % of a ~30 ns component | 1.23 ns | 4.1 ns | 0.27 |
+  | 1.0 ns Cy5 + 30 % of 10 ns | 1.53 ns | 3.5 ns | 0.20 |
+  | Cy5 at ~1.3 ns (lengthened, e.g. adsorbed to glass, which hinders cis–trans isomerisation) + ~30 % DC | 1.27 ns | ≈4.7 ns | 0.32 |
+
+- **τ_ref decides how plausible each is:**
+
+  | τ_ref | Cy5 τ_phase | early ATTO τ_phase | implies |
+  |---|---|---|---|
+  | 0 | 1.24–1.30 ns | 1.68–1.93 ns | Cy5 plausible; ATTO needs ~30–40 % prompt light |
+  | 0.2 ns | 1.46–1.49 ns | | |
+  | 0.37 ns | 1.66–1.69 ns | 2.1–2.4 ns | Cy5 long for free dye; ATTO needs ~20 % prompt light |
+
+  100 µM MB may be self-quenched below 0.37 ns. **Pin τ_ref down first** (MB against a scatter IRF).
+- **Distinguishing the models:** a ~30 ns component gives almost the same f_dc at 20 and 40 MHz as pure DC (0.255 vs
+  0.273). But it raises τ_phase more at 20 MHz, while DC leaves the phase alone. The fit in step 3 with τ_dye fixed at
+  1.0 ns tells them apart.
+- **Possible sources of a long or DC component** (none confirmed):
+  - autofluorescence of the DIY channel slide (untested; the 2026-10-30 blank was a dish);
+  - a buffer impurity (but Cy5 was demodulated without scavengers too);
+  - unmodulated excitation (H2).
+- **Tests:**
+  - a buffer-only channel in the same slide (TIRF, exposure and filters unchanged);
+  - Cy5 in glycerol, or Cy5-DNA, as a lengthened-Cy5 reference;
+  - the two-frequency fit above.
+
+### Other open candidates for the DC-like part
+
+1. **Unmodulated excitation (H2)** from the directly modulated diode (spontaneous emission or a spectral pedestal). If
+   it is at a different wavelength from the laser line, the dyes absorb it differently: Cy5 and ATTO 647N absorb at
+   ~646–649 nm, MB at 664 nm. That would fit 1 µM MB being clean. Test with a laser-line clean-up filter (E4.2) and a
+   log-scale spectrum with modulation on and off (E4.1).
+2. **Exposure-dependent timing** (camera vs phase stepping vs laser). Test: MB and dye at 10 → 400 ms with OD chosen to
+   keep the counts per frame constant. If MB also loses modulation at long exposure, it is instrumental.
+3. **Millisecond luminescence:** switch the laser off part-way through a long exposure, or start an exposure just after
+   switching it off. Any signal after switch-off is delayed emission.
 
 ## Rules for every session (controls H4)
 

@@ -82,7 +82,12 @@ per-pixel |h| and τ vs intensity, blank-subtracted phasors, and a CSV with one 
 
 ## 5. Bulk-dye demodulation (open problem)
 
-Diagnostic plan: [demodulation_diagnosis_plan.md](demodulation_diagnosis_plan.md).
+Diagnostic plan: [demodulation_diagnosis_plan.md](demodulation_diagnosis_plan.md). It includes the 2026-11-05 update
+(f_dc depends on exposure; oxygen scavengers don't remove it) and how a prompt component mimics demodulation, with a
+two-frequency (20/40 MHz) unmixing protocol.
+
+Remember that f_dc assumes "one lifetime + DC". Any mixture of lifetimes lies inside the semicircle. A prompt component
+gives f_dc ≤ 0.14 with a 3.5 ns dye and ≤ 0.015 with a 1 ns dye.
 
 Symptom: bulk Cy5 is heavily demodulated relative to MB (τ_mod 2–7 ns ≫ τ_phase), and worse at higher power.
 
@@ -143,6 +148,37 @@ emission in the "off" half-cycle) that MB and Cy5 absorb differently. A laser-li
 - Better acquisition: 6–8 steps covering the full 360° (e.g. 60° or 45° steps), so the 1st and 3rd harmonics can both be fitted.
 
 ## 7. Dataset log
+
+### 2026-11-05 `F:\uiuc_data\20261105(1)\20261105\ox_test` (analysed 2026-11-05 → `analysis_claude/`)
+- DIY channel slide, PCA/PCD + Trolox. Channels: ATTO–streptavidin and Cy5, each ~1.2 µM, unpassivated glass. All
+  at 10 mW, TIRF 3773, attenuated with OD 0/0.5. z is the focus offset from the surface as named.
+- **New registration**: beads `bead_stack_pockels_off_lc1,5vrms_1/2/3` agree within 0.1 px (CV 0.52 px). Split 1522
+  (was 1574), x offset −39 px (was +2), so don't reuse the 2026-10-30 JSON.
+- **MB IRFs are very stable**: raw phase −86.4 → −86.6° from 17:53 to 18:44 (0.017 ns), and |h| 0.46–0.48 at
+  10–40 ms. The 200 ms MB `184251` saturates (65535 ADU) and is excluded.
+- The camera dark level rises with exposure (~100 + 0.2 ADU/ms, everywhere on the chip). The margin offset follows it.
+- Analysis: `z_time/` (scratchpad `ox_z_time.py`). Phasors are per-pixel calibrated, intensity-weighted, against an IRF
+  interpolated in time between the two MB brackets. They agree with the ROI ratio of sums within 0.01.
+  `bulk_phasor/` has the standard per-acquisition figures.
+- **Still demodulated with oxygen scavengers**: Cy5 f_dc 0.23–0.35, τ_phase 1.24–1.30 ns. ATTO f_dc 0.12–0.27,
+  τ_phase 1.68–1.93 ns (early, before clumping).
+- **f_dc rises with exposure, reversibly, at fixed power and field; τ_phase is unchanged.**
+  - ATTO, one field: 20 ms 0.12 → 40 ms 0.17 → 100 ms 0.26 → 200 ms 0.27, then 40 ms 0.17 and 20 ms 0.13 again.
+  - Cy5: 100 ms 0.23 → 200 ms 0.31 → 400 ms 0.35, then 100 ms 0.23 again.
+  - MB IRFs show no trend from 10 to 40 ms.
+  - Stray/dark light is far too small to explain it (≤40 ADU at 200 ms, against the ~400 ADU of extra unmodulated
+    signal needed).
+  - Pupil/defocus geometry cannot depend on exposure. Untested: unsaturated MB at 100–400 ms, and exposure at constant
+    counts (OD).
+- **No z dependence**: Cy5 −2…+10 µm gives f_dc 0.33 → 0.30. ATTO 200 ms 15 → 0 µm gives 0.29–0.34. But for a uniform
+  layer with the cell in the pupil, defocus does not change the pupil distribution per pixel, so this does not test
+  H1a (that needs point sources).
+- **Time**: ATTO τ_phase rose 1.68 → 1.93 ns between 17:58 and 18:07, while f_dc at fixed exposure did not change.
+  By 18:24 the ATTO signal had fallen ~25–80× (clumping/sticking). After that, τ_phase was 2.5–2.8 ns and f_dc
+  0.29–0.35 at 200 ms. The 40 ms z-series (`182719`–`183015`, 5–6 ADU/px) is unusable. Cy5 was stable, with a
+  field-to-field f_dc difference (0.23 vs 0.32 at 100 ms).
+- `trig`/`notrig` and the 0.5 s laser settle made no difference. The first Cy5 stack `180820` (OD 0.5, f_dc 0.65) is
+  anomalous.
 
 ### 2026-10-30 (morning) `F:\uiuc_data\20261030_cy5_bulktest\20261030_cy5_bulktest` (analysed 2026-11-01 → `analysis_claude/`)
 - RF 17.15 W, 2.5 Vrms, TIRF 3970. No beads were taken, so registration used the bead JSON from the afternoon session.

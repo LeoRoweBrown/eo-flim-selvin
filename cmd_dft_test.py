@@ -1,0 +1,1 @@
+dft_bowman_method.py "E:\20261106\analysis\registered_25dc" --out E:\20261106\analysis\test_data\phasors --irf "E:\20261106\analysis\registered_25dc\vin_0.12_15,48W_1,7Vrms_MB_100uM_uM_od0,5_z0um_0,5s_laser_settle_3773tirf_25pc_duty_10mW_40ms_20261106_105345_registered.tif"

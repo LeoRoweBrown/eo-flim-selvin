@@ -12,6 +12,8 @@ r_phase, r_mod                  phasor of r_k = G_k / (G_k + U_k). Normalising e
                                 anything common to both views; normalised U is 1 - r, so it carries the same
                                 phase, and r is the only independent quantity left.
 ratio                           weighted joint fit of r_k to the LUT curves (as sm_lifetime.py).
+ratio_<phase>                   single-phase estimate: r_k of that one frame inverted on its own LUT curve
+                                (monotonic branch from tau = 0; NaN outside it), as in single-phase EO-FLIM.
 
 Expected spread
 ---------------
@@ -24,7 +26,9 @@ U_k + G_k (laser drift and blinking kept). Noise is added and the estimators rer
 The spread is the IQR over pixels / molecules. What the simulation leaves out: real heterogeneity,
 spatial calibration errors and any noise not in the model.
 
-Outputs (in --out): estimators_box.png, estimators_hist.png, estimators_spread.png, estimators_summary.csv
+Outputs (in --out): estimators_box.png, estimators_hist.png, estimators_spread.png, estimators_phase.png
+(single-phase estimates vs phase: median and IQR, fraction invertible, observed vs expected spread),
+estimators_summary.csv
 
 Usage
 -----
@@ -85,6 +89,8 @@ class Model:
         for k, h in (("U", hu), ("G", hg), ("mean", (hu + hg) / 2), ("r", hr)):
             e[f"{k}_phase"], e[f"{k}_mod"] = self.lifetimes(h)
         e["ratio"] = ll.joint_fit(r, Rs, TAUS, w)[0]
+        for k, ph in enumerate(self.phases):
+            e[f"ratio_{ph:g}"] = ll.invert(r[k], Rs[k], TAUS)
         return e
 
 
@@ -93,8 +99,9 @@ def iqr(v):
     return np.subtract(*np.percentile(v, [75, 25])) if len(v) else np.nan
 
 
-def bulk_sample(path, M, Ui, Gi):
-    """Offset-subtracted binned U, G traces of the calibrated pixels, IRF traces there, and LUT curves."""
+def bulk_sample(path, M, Ui, Gi, with_mask=False):
+    """Offset-subtracted binned U, G traces of the calibrated pixels, IRF traces there, and LUT curves
+    (and the pixel mask, with_mask=True)."""
     L = M.L
     reg = tifffile.imread(path).astype(np.float32)
     U, G = reg[:, 0], reg[:, 1]
@@ -103,7 +110,8 @@ def bulk_sample(path, M, Ui, Gi):
     N = U + G
     m = L["mask"] & np.isfinite(N).all(0) & np.isfinite(Ui + Gi).all(0)
     m &= N.mean(0) > 0.3 * np.nanpercentile(N.mean(0)[m], 99)
-    return U[:, m], G[:, m], Ui[:, m], Gi[:, m], M.curves(L["cU"][:, m], L["cG"][:, m])
+    out = U[:, m], G[:, m], Ui[:, m], Gi[:, m], M.curves(L["cU"][:, m], L["cG"][:, m])
+    return (*out, m) if with_mask else out
 
 
 def mol_sample(path, M, Ui, Gi):
@@ -153,13 +161,15 @@ def short(name):
 
 
 def colour(k):
+    if k.startswith("ratio_"):
+        return "C1"
     return "C2" if k == "ratio" else ("C0" if k.endswith("phase") else "C3")
 
 
 def plot_distributions(samples, kind_plot, out, irf_name):
-    nc = 4
+    nc = 3
     nr = int(np.ceil(len(samples) / nc))
-    fig, axs = plt.subplots(nr, nc, figsize=(5.2 * nc, 4.3 * nr), squeeze=False)
+    fig, axs = plt.subplots(nr, nc, figsize=(7.5 * nc, 4.3 * nr), squeeze=False)
     for a, s in zip(axs.flat, samples):
         data = [np.clip(s["obs"][k][np.isfinite(s["obs"][k])], -2, 14) for k in KEYS]
         if kind_plot == "box":
@@ -175,7 +185,7 @@ def plot_distributions(samples, kind_plot, out, irf_name):
         else:
             bins = np.arange(-1, 10, 0.1 if s["kind"] == "bulk" else 0.25)
             for k, v in zip(KEYS, data):
-                if k.startswith("mean"):
+                if k.startswith("mean") or k.startswith("ratio_") or not len(v):
                     continue
                 a.hist(v, bins, histtype="step", lw=1.4, density=True, ls="--" if k.startswith("G") else "-",
                        color="k" if k.startswith("r_") else colour(k), label=f"{k} {np.median(v):.2f}")
@@ -191,10 +201,42 @@ def plot_distributions(samples, kind_plot, out, irf_name):
     plt.close(fig)
 
 
-def plot_spread(samples, out):
-    nc = 4
+def plot_phase(samples, phases, out):
+    """Single-phase ratio lifetimes against the gate phase, next to the multi-phase estimates."""
+    nc = 3
     nr = int(np.ceil(len(samples) / nc))
-    fig, axs = plt.subplots(nr, nc, figsize=(5.2 * nc, 4.0 * nr), squeeze=False)
+    fig, axs = plt.subplots(nr, nc, figsize=(7 * nc, 4.3 * nr), squeeze=False)
+    keys = [f"ratio_{p:g}" for p in phases]
+    for a, s in zip(axs.flat, samples):
+        # phases where most estimates fall outside the monotonic LUT branch are biased by the selection: not drawn
+        q = np.array([np.nanpercentile(s["obs"][k], [25, 50, 75]) if np.isfinite(s["obs"][k]).mean() >= 0.5
+                      else [np.nan] * 3 for k in keys])
+        a.fill_between(phases, q[:, 0], q[:, 2], color="C1", alpha=0.25, label="single phase: IQR")
+        a.plot(phases, q[:, 1], "o-", c="C1", label="single phase: median")
+        for k, c, ls in (("r_phase", "C0", "--"), ("ratio", "C2", ":")):
+            a.axhline(np.nanmedian(s["obs"][k]), c=c, ls=ls, label=f"{k} (all phases) {np.nanmedian(s['obs'][k]):.2f}")
+        for p, k in zip(phases, keys):
+            a.annotate(f"{np.isfinite(s['obs'][k]).mean():.0%}\n{iqr(s['obs'][k]):.2f}/{iqr(s['meas'][k]):.2f}",
+                       (p, 0.02), xycoords=("data", "axes fraction"), ha="center", fontsize=6)
+        a.set_ylim(-0.5, 8)
+        a.set_xticks(phases)
+        a.set_xlabel("gate phase [RF deg]  (labels: invertible, IQR obs / expected [ns])")
+        a.set_ylabel("tau [ns]")
+        a.grid(alpha=0.3)
+        a.set_title(f"{s['kind']}: {short(s['name'])}  (n={len(s['obs']['ratio'])})", fontsize=8)
+    list(axs.flat)[0].legend(fontsize=6, loc="upper right")
+    for a in list(axs.flat)[len(samples):]:
+        a.axis("off")
+    fig.suptitle("single-phase ratio lifetimes G/(G+U) at each gate phase vs the estimates using all phases", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out / "estimators_phase.png", dpi=75)
+    plt.close(fig)
+
+
+def plot_spread(samples, out):
+    nc = 3
+    nr = int(np.ceil(len(samples) / nc))
+    fig, axs = plt.subplots(nr, nc, figsize=(7.5 * nc, 4.0 * nr), squeeze=False)
     xk = np.arange(len(KEYS))
     for a, s in zip(axs.flat, samples):
         obs = [iqr(s["obs"][k]) for k in KEYS]
@@ -235,6 +277,7 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     M = Model(args.lut, args.phase_step)
+    KEYS.extend(f"ratio_{p:g}" for p in M.phases)
     b = M.L["bin"]
     reg = tifffile.imread(args.irf).astype(np.float32)
     bg = md.background(reg[:, 0], 250)
@@ -282,10 +325,16 @@ def main():
             print(f"{r.kind:4s} {r['name']:46s} " + "  ".join(
                 f"{k} {r[k + '_iqr']:.2f}/{r[k + '_iqr_shot']:.2f}/{r[k + '_iqr_meas']:.2f}"
                 for k in ("r_phase", "r_mod", "ratio", "U_phase", "G_phase")))
+        print("\nsingle-phase ratio: median / IQR observed / IQR expected (measured noise) [ns], invertible fraction")
+        for s, (_, r) in zip(samples, t.iterrows()):
+            print(f"{r.kind:4s} {r['name']:46s} " + "  ".join(
+                f"{p:g}: {r[f'ratio_{p:g}']:.2f}/{r[f'ratio_{p:g}_iqr']:.2f}/{r[f'ratio_{p:g}_iqr_meas']:.2f} "
+                f"({np.isfinite(s['obs'][f'ratio_{p:g}']).mean():.0%})" for p in M.phases))
 
     for kind_plot in ("box", "hist"):
         plot_distributions(samples, kind_plot, args.out, args.irf.name)
     plot_spread(samples, args.out)
+    plot_phase(samples, M.phases, args.out)
     print(f"wrote {args.out}")
 
 

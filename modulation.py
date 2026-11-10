@@ -80,6 +80,7 @@ def normalize_frames(U, G):
 
 
 def bin_stack(a, b):
+    """reshape into 4D to bin the image by averaging"""
     h, w = a.shape[-2] // b * b, a.shape[-1] // b * b
     a = a[..., :h, :w]
     return a.reshape(a.shape[:-2] + (h // b, b, w // b, b)).mean(axis=(-3, -1))

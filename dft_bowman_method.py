@@ -25,7 +25,7 @@ def main():
     p.add_argument("--roi", type=int, nargs=2, default=[200,200], help="ROI dimensions [Y, X]")
     p.add_argument("--roi-center", type=int, nargs=2, default=None, metavar=("Y", "X"),
                    help="ROI centre [full-res px] (default: centroid of the mask)")
-    p.add_argument("--bg", type=float, default=100, help="fixed camera offset (default: from image margins)")
+    p.add_argument("--bg", type=float, default=90, help="fixed camera offset (default: from image margins)")
     p.add_argument("--use-g", action="store_true")
     p.add_argument("--show-plots", action="store_false")
     p.add_argument("--duty-cycle", type=float, default=0.5)
@@ -54,6 +54,7 @@ def main():
                 args.phase_step, args.period, bg=args.bg) for path in args.data]
 
     if args.roi_center is None:
+        print("shape of dft_irf", dft_irf.shape)
         args.roi_center = [dft_irf.shape[0] // 2, dft_irf.shape[1] // 2]
     roi_rect = [args.roi_center[0] - args.roi[0] // 2, args.roi_center[0] + args.roi[0] // 2,
                 args.roi_center[1] - args.roi[1] // 2, args.roi_center[1] + args.roi[1] // 2]
@@ -114,11 +115,17 @@ def plot_phasors(dft_data, data_labels, freq, save_phasors=None, show_plots=Fals
     if show_plots:
         plt.show()
 
-def ft_data(data, phase_step, period, gate_idx=1, bg=100):
+def ft_data(data, phase_step, period, gate_idx=1, bg=100, threshold=40):
     """DFT of the IRF data."""
     
     # 1 = g, 0 = u
+    
     g_over_gplusu = data[:,gate_idx,...] / (data[:,1,...] + data[:,0,...])
+    g_mask = data[:, gate_idx, ...] < threshold
+    u_mask = data[:, 0, ...] < threshold
+    # AND operation on two masks
+    g_and_u_mask = g_mask | u_mask
+    g_over_gplusu[g_and_u_mask] = np.nan
 
     # get phases
     phases = np.array([phase_step*i for i in range(data.shape[0])])

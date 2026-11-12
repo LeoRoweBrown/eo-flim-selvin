@@ -10,7 +10,7 @@ Output: <name>_registered.tif, an ImageJ hyperstack (T, C, Y, X) float32 with th
 
 Usage
 -----
-    conda run -n image python register_views.py <acquisition folder or .ome.tif> [...]
+    conda run -n image python register_views.py <acquisition folder or .tif> [...]
     conda run -n image python register_views.py <folder> --reg <bead_registration.json> --out <dir>
 """
 import argparse
@@ -41,11 +41,11 @@ def load_warp(path):
 
 
 def find_stack(path):
-    """The .ome.tif itself, or the first MMStack .ome.tif in a folder."""
+    """The .tif itself, or the first .tif in a folder."""
     if path.is_dir():
-        files = sorted(path.glob("*MMStack*.ome.tif"))
+        files = sorted(path.glob("*.tif"))
         if not files:
-            raise FileNotFoundError(f"no MMStack .ome.tif in {path}")
+            raise FileNotFoundError(f"no tif in {path}")
         return files[0]
     return path
 
@@ -64,9 +64,9 @@ def register(raw, warp, split):
 
 
 def register_one(path, warp, split, out, reg_path):
-    """Register one acquisition folder or .ome.tif and save <name>_registered.tif in out."""
+    """Register one acquisition folder or .tif and save <name>_registered.tif in out."""
     file = find_stack(path)
-    name = path.name if path.is_dir() else file.name.removesuffix(".ome.tif").removesuffix(".tif")
+    name = path.name if path.is_dir() else file.name.removesuffix(".tif")
     raw = tifffile.imread(file)
     raw = raw.reshape(-1, *raw.shape[-2:])
     if raw.shape[-2] < split + 1:
@@ -83,11 +83,11 @@ def register_one(path, warp, split, out, reg_path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("data", type=Path, nargs="+", help="acquisition folder(s) or .ome.tif file(s)")
+    p.add_argument("data", type=Path, nargs="+", help="acquisition folder(s) or .tif file(s)")
     p.add_argument("--reg", type=Path, default=DEFAULT_REG, help="bead_registration.json")
     p.add_argument("--out", type=Path, default=DEFAULT_OUT)
     p.add_argument("--files-in-root", action="store_true",
-                   help="look for MMStack .ome.tif in subfolders of each data folder")
+                   help="look for .tif files in subfolders of each data folder")
     args = p.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     print("Starting registration of {} acquisition(s) in {}".format(len(args.data), args.data[0]))
@@ -95,16 +95,16 @@ def main():
     warp, split = load_warp(args.reg)
     print(f"registration json file: {args.reg} (split {split})")
 
-    # get list of subfolders that contain MMStack .ome.tif files if --files-in-root is specified
+    # get list of subfolders that contain .tif files if --files-in-root is specified
     if not args.files_in_root:
         subfolders = []
         for folder in args.data:
             if folder.is_dir():
-                subfolders.extend(sorted(f for f in folder.glob("*") if f.is_dir() and any(f.glob("*MMStack*.ome.tif"))))
+                subfolders.extend(sorted(f for f in folder.glob("*") if f.is_dir() and any(f.glob("*.tif"))))
             else:
                 print(f"{folder} is not a directory, skipping")
         args.data = subfolders
-        print(f"Found {len(args.data)} subfolders with MMStack .ome.tif files")
+        print(f"Found {len(args.data)} subfolders with .tif files")
     
     for path in args.data:
         register_one(path, warp, split, args.out, args.reg)

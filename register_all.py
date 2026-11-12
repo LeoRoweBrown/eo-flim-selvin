@@ -1,7 +1,7 @@
 """
 Run register_views on every acquisition folder inside a parent folder (e.g. a day's modulation data).
 
-Subfolders without an MMStack .ome.tif are skipped, as are ones already registered in --out
+Subfolders without a .tif are skipped, as are ones already registered in --out
 (unless --force). A failure on one folder is reported and the rest still run.
 
 Usage
@@ -26,12 +26,15 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     warp, split = load_warp(args.reg)
-    folders = sorted(f for f in args.parent.glob(args.pattern) if f.is_dir())
-    todo = [f for f in folders if any(f.glob("*MMStack*.ome.tif"))]
-    skipped = sorted(set(folders) - set(todo))
-    if skipped:
-        print(f"skipping {len(skipped)} folders with no MMStack .ome.tif: " + ", ".join(f.name for f in skipped))
-    print(f"registration {args.reg} (split {split}); {len(todo)} folders -> {args.out}")
+    # folders = sorted(f for f in args.parent.glob(args.pattern) if f.is_dir())
+    # folders = args.parent
+    # print("folders", folders)
+    todo = sorted(args.parent.glob(f"{args.pattern}*.tif"))
+    # todo = [f for f in folders if any(f.glob("*.tif"))]
+    # skipped = sorted(set(folders) - set(todo))
+    # if skipped:
+    #     print(f"skipping {len(skipped)} folders with no .tif: " + ", ".join(f.name for f in skipped))
+    # print(f"registration {args.reg} (split {split}); {len(todo)} folders -> {args.out}")
 
     failed = []
     for n, folder in enumerate(todo, 1):

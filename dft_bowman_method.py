@@ -14,10 +14,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("data", type=Path, nargs="*", default=[DEFAULT_DATA],
                    help="folder of *_registered.tif and/or individual files")
-    p.add_argument("--irf", nargs="*", default=[DEFAULT_IRF],
+    p.add_argument("--irf", nargs="*", default=[DEFAULT_IRF], type=Path,
                    help="full path to registered IRF data")
     p.add_argument("--out", type=Path)
-    p.add_argument("--freq", type=float, default=20.0, help="RF frequency [MHz] of laser")
+    p.add_argument("--freq", type=float, default=40.0, help="RF frequency [MHz] of laser")
     p.add_argument("--phase-step", type=float, default=30.0, help="RF phase step between frames [deg]")
     p.add_argument("--period", type=float, default=180.0, help="gating period in RF phase [deg]")
     p.add_argument("--harmonics", type=int, default=2, help="max harmonics in the fit (capped by #phases)")
@@ -25,101 +25,100 @@ def main():
     p.add_argument("--roi", type=int, nargs=2, default=[200,200], help="ROI dimensions [Y, X]")
     p.add_argument("--roi-center", type=int, nargs=2, default=None, metavar=("Y", "X"),
                    help="ROI centre [full-res px] (default: centroid of the mask)")
-    p.add_argument("--bg", type=float, default=90, help="fixed camera offset (default: from image margins)")
+    p.add_argument("--bg", type=float, default=100, help="fixed camera offset (default: from image margins)")
     p.add_argument("--use-g", action="store_true")
-    p.add_argument("--show-plots", action="store_false")
+    p.add_argument("--hide-plots", action="store_true")
     p.add_argument("--duty-cycle", type=float, default=0.5)
     p.add_argument("--use-average-roi-irf", action="store_true")
     args = p.parse_args()
+
+    # data files: a folder -> every *_registered.tif in it
+    files = []
+    for d in args.data:
+        d = Path(d)
+        files += sorted(d.glob("*_registered.tif")) if d.is_dir() else [d]
+
+    # output: <out>/<irf name>/ for the pngs, <out>/<irf name>/data/ for the .npy and args.txt
+    save_path = data_dir = None
     if args.out is not None:
-        args.out.mkdir(parents=True, exist_ok=True)
-
-    print("run FT IRF")
-
-    # subtract digital offset from the IRF data (float first: uint16 - 100 wraps below 0)
-    if args.use_average_roi_irf:
-        data = average_roi_irf(args.irf[0], args.roi, bg=args.bg)
-    else:
-        data = imread(args.irf[0]).astype(np.float32) - args.bg
-    
-    dft_irf = ft_data(data, args.phase_step, args.period, bg=args.bg)
-    
-    # make sure when single tif is apssed as data that the string does not get treated as a list
-    if len(args.data) == 1 and isinstance(args.data[0], str):
-        args.data = [Path(args.data[0])]
-    if len(args.data) == 1 and args.data[0].is_dir():
-        args.data = list(args.data[0].glob("*_registered.tif"))
-
-    dft_data = [ft_data(imread(path).astype(np.float32) - args.bg,
-                args.phase_step, args.period, bg=args.bg) for path in args.data]
-
-    if args.roi_center is None:
-        print("shape of dft_irf", dft_irf.shape)
-        args.roi_center = [dft_irf.shape[0] // 2, dft_irf.shape[1] // 2]
-    roi_rect = [args.roi_center[0] - args.roi[0] // 2, args.roi_center[0] + args.roi[0] // 2,
-                args.roi_center[1] - args.roi[1] // 2, args.roi_center[1] + args.roi[1] // 2]
-    y_start, y_end, x_start, x_end = roi_rect
-    dft_irf = dft_irf[y_start:y_end, x_start:x_end]
-    dft_data = [dft[y_start:y_end, x_start:x_end] / dft_irf for dft in dft_data]
-    data_labels = [path.name for path in args.data]
-    print(dft_irf.shape)
-
-    if args.out is not None:
-        # make phasor data subfolder output dir args.out/data
-        args.out.mkdir(parents=True, exist_ok=True)
-        data_dir = args.out / "data"
+        save_path = args.out / args.irf[0].stem
+        data_dir = save_path / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
-        for n, dft in enumerate(dft_data):
-            np.save(data_dir / f"{data_labels[n]}.npy", dft)
+        # save args first, so they are there even if a dataset fails later
+        (data_dir / "args.txt").write_text("".join(f"{k}: {v}\n" for k, v in vars(args).items()))
 
-    # phasor is at the gate frequency: 360/period gate cycles per RF cycle (40 MHz for 20 MHz RF, 180 deg)
-    plot_phasors(dft_data, data_labels, args.freq * 360 / args.period, 
-                 save_phasors=args.out, show_plots=args.show_plots)
+    # IRF: full-image DFT, then cropped to the ROI (or one ROI-averaged phasor)
+    print(f"run FT IRF: {args.irf[0].name}")
+    irf = imread(args.irf[0]).astype(np.float32) - args.bg   # float first: uint16 - 100 wraps below 0
+    if args.roi_center is None:
+        args.roi_center = [irf.shape[-2] // 2, irf.shape[-1] // 2]
+    y_start, y_end, x_start, x_end = [args.roi_center[0] - args.roi[0] // 2, args.roi_center[0] + args.roi[0] // 2,
+                                      args.roi_center[1] - args.roi[1] // 2, args.roi_center[1] + args.roi[1] // 2]
+    irf = irf[..., y_start:y_end, x_start:x_end]
+    if args.use_average_roi_irf:
+        irf = irf.mean(axis=(-2, -1))       # (T, 2): one IRF phasor for the whole ROI
+    dft_irf = ft_data(irf, args.phase_step, args.period, bg=args.bg)
+    del irf
 
-def average_roi_irf(path, roi_rect, bg=100):
-    data = imread(path).astype(np.float32)  # is a stack of length n_phase
-    # subtract digital offset from the IRF data (float first: uint16 - 100 wraps below 0)
-    data = data - bg
-    y_start, y_end, x_start, x_end = roi_rect
-    # add the bg back
-    data = data + bg 
-    return data[:, y_start:y_end, x_start:x_end].mean(axis=(1, 2))
+    freq = args.freq #  * 360 / args.period
 
-def plot_phasors(dft_data, data_labels, freq, save_phasors=None, show_plots=False):
+    # one dataset at a time: DFT -> normalise -> save .npy and png straight away
+    failed = []
+    for n, path in enumerate(files, 1):
+        label = path.name
+        print(f"[{n}/{len(files)}] {label}")
+        try:
+            data = imread(path).astype(np.float32)[..., y_start:y_end, x_start:x_end] - args.bg
+            dft = ft_data(data, args.phase_step, args.period, bg=args.bg) / dft_irf
+            del data
+            if data_dir is not None:
+                np.save(data_dir / f"{label}.npy", dft)
+            plot_phasor(dft, label, freq, save_path=save_path, close=args.hide_plots)
+        except Exception as e:  # keep going; report at the end
+            print(f"  FAILED ({type(e).__name__}: {e})")
+            failed.append(label)
+
+    if failed:
+        print(f"\n{len(failed)} failed: " + ", ".join(failed))
+    if save_path is not None:
+        print(f"wrote {save_path}")
+    if not args.hide_plots:
+        plt.show()
+
+
+def plot_phasor(dft, label, freq, save_path=None, close=True):
+    """2D histogram of one dataset's phasors with the universal circle; saved as <label>.png."""
     # calculate point on g,s circle for 1, 2, 3, 5, 10ns single exp
     omega = 2*np.pi*freq*1e6
     tau = np.array([1e-9, 2e-9, 3e-9, 5e-9, 10e-9])
     g_markers = 1/(1 + (omega*tau)**2)
     s_markers = g_markers * omega*tau
-    for n, dft in enumerate(dft_data):
-        plt.figure()
-        dft = dft[np.isfinite(dft)]  # histogram2d needs 1-D input without NaN/inf
-        g = dft.real
-        s = dft.imag
-        # plt.scatter(g, s, s=1)
-        heatmap, edgex, edgey = np.histogram2d(g, s, bins=200, range=[[-0.1, 1.2], [-0.1, 0.6]])
-        plt.pcolormesh(edgex, edgey, heatmap.T, cmap="magma")
+    plt.figure()
+    dft = dft[np.isfinite(dft)]  # histogram2d needs 1-D input without NaN/inf
+    g = dft.real
+    s = dft.imag
+    heatmap, edgex, edgey = np.histogram2d(g, s, bins=200, range=[[-0.1, 1.2], [-0.1, 0.6]])
+    plt.pcolormesh(edgex, edgey, heatmap.T, cmap="magma")
 
-        # now plot universal circle (centre (0.5, 0), radius 0.5)
-        theta = np.linspace(0, np.pi, 100)
-        plt.plot(0.5 + 0.5*np.cos(theta), 0.5*np.sin(theta), "w")
-        plt.scatter(g_markers, s_markers, c="w")
-        for g_marker, s_marker, lifetime in zip(g_markers, s_markers, tau):
-            plt.text(g_marker, s_marker, f"{lifetime * 1e9:.0f} ns", color='w')
-        plt.xlim(-0.1, 1.2)
-        plt.ylim(-0.1, 0.6)
-        plt.colorbar()
-        plt.title(data_labels[n])
-        if save_phasors is not None:
-            plt.savefig(save_phasors / f"{data_labels[n]}.png")
-    if show_plots:
-        plt.show()
+    # now plot universal circle (centre (0.5, 0), radius 0.5)
+    theta = np.linspace(0, np.pi, 100)
+    plt.plot(0.5 + 0.5*np.cos(theta), 0.5*np.sin(theta), "w")
+    plt.scatter(g_markers, s_markers, c="w")
+    for g_marker, s_marker, lifetime in zip(g_markers, s_markers, tau):
+        plt.text(g_marker, s_marker, f"{lifetime * 1e9:.0f} ns", color='w')
+    plt.xlim(-0.1, 1.2)
+    plt.ylim(-0.1, 0.6)
+    plt.colorbar()
+    plt.title(label, fontsize=8)
+    if save_path is not None:
+        plt.savefig(save_path / f"{label}.png")
+    if close:
+        plt.close()
 
-def ft_data(data, phase_step, period, gate_idx=1, bg=100, threshold=40):
+def ft_data(data, phase_step, period, gate_idx=1, bg=100, threshold=0):
     """DFT of the IRF data."""
     
     # 1 = g, 0 = u
-    
     g_over_gplusu = data[:,gate_idx,...] / (data[:,1,...] + data[:,0,...])
     g_mask = data[:, gate_idx, ...] < threshold
     u_mask = data[:, 0, ...] < threshold

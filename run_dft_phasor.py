@@ -1,20 +1,37 @@
-
+import tkinter as tk
+from tkinter import filedialog
 import subprocess
 
+print("-----running dft phasor script-----")
 
-code_root = "E:\\code\\eo_flim\\code_20261020\\eo-flim-selvin\\"
-script_path = f"{code_root}dft_bowman_method.py"
-irf_fn = "irf_tirf5048_10mW_10ms_20261111_112507_registered.tif"
-root = "E:\\20261111\\20261111\\"
-data = "E:\\20261111\\20261111\\registered\\"
-out = f"{root}output"
-irf = f"{data}{irf_fn}"
+root = tk.Tk()
+root.withdraw()
+
+# Open the file explorer and capture the selected file path
+irf_path = filedialog.askopenfilename(
+    initialdir="/",
+    title="Select an IRF file",
+    filetypes=(("TIFF files", "*.tif"), ("All files", "*.*"))
+)
+
+data_path = filedialog.askdirectory(
+    initialdir="/",
+    title="Select a data directory"
+)
+
+out_path = filedialog.askdirectory(
+    initialdir="/",
+    title="Select an output directory"
+)
+
+print(f"Reading data: {data_path}")
+print(f"IRF file: {irf_path}")
+print(f"Output directory: {out_path}")
 
 cmd = ["C:\\Users\\leorb\\.conda\\envs\\image\\python.exe",
-       script_path, data, "--irf", irf, "--out", out]
-
+       "dft_bowman_method.py", data_path, "--irf", irf_path, "--out", out_path, "--hide-plots"]
 
 cmd = " ".join(cmd)
-print(cmd)
+print("Command:", cmd)
 
 subprocess.run(cmd)
